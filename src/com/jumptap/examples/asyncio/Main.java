@@ -1,55 +1,112 @@
 package com.jumptap.examples.asyncio;
 
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
+import org.apache.commons.codec.binary.Hex;
 import org.eclipse.jetty.client.ContentExchange;
 import org.eclipse.jetty.client.HttpClient;
 
 public class Main {
+    /** How much reps does the busy wait do? */
+    private static final int WORK_FACTOR = 100000;
+
+    /**
+     * How many times do we run the tests before running tests where we look
+     * at the performance. Basically, how long before all the code is no
+     * longer getting affected by the JIT.
+     */
+    private static final int WARMUP_FACTOR = 1000;
+
+    private static final int RUN_FACTOR = 1000;
+
     static boolean done = false;
-    static int numRequests = 5;
+    static int numRequests = 10000;
     static int numSeen = 0;
     static long start;
+    static double elapsed = 0.0;
     static HttpClient client;
-    static boolean isAsync = true;
-    
-    private static void setUp() throws Exception{
-        //straight from the jetty docs
-        //http://wiki.eclipse.org/Jetty/Tutorial/HttpClient
-        //we have to use jetty 7 or 8. jetty 9 libs are compiled with jdk 7
-        client = new HttpClient();
-        client.setConnectorType(HttpClient.CONNECTOR_SELECT_CHANNEL);
-        //just 1 request thread to see if we really are helping the main thread do more work
-        client.setMaxConnectionsPerAddress(1); 
-        client.start();
-    }
-    
+    static boolean isAsync = false;
+    static BusyWaiter waiter = BusyWaiter.ARITHMETIC_LOOP;
+
     /**
      * @param args
      * @throws Exception 
      */
     public static void main(String[] args) throws Exception {
         setUp();
+        warmUp();
+        run(RUN_FACTOR, false);
+        String firstResults = getStats();
+        run(RUN_FACTOR, true);
+        String lastResults = getStats();
+        System.out.println();
+        System.out.println(firstResults);
+        System.out.println(lastResults);
+    }
+
+    private static void setUp() throws Exception{
+        client = new HttpClient();
+        client.setConnectorType(HttpClient.CONNECTOR_SELECT_CHANNEL);
+        client.setMaxConnectionsPerAddress(1); 
+        client.start();
+    }
+
+    /**
+     * Do dry-runs to make sure all classes are loaded and JIT optimizations
+     * have been performed.
+     */
+    public static void warmUp() {
+        run(WARMUP_FACTOR, false);
+        run(WARMUP_FACTOR, true);
+    }
+
+    /**
+     * Run through the the async or sync test a number of reps.
+     * @param reps The number of reps.
+     * @param async True if the test should be asynchronous.
+     */
+    public static void run(int reps, boolean async) {
+        done = false;
+        numRequests = reps;
+        numSeen = 0;
+        isAsync = async;
         start = System.nanoTime();
-        System.out.println("start="+start);
-        for(int i=0; i < numRequests; i++){
-            busyWait(); //pretend we're doing work before external request
-            ContentExchange exc = sendRequestAsync();
-            if(!isAsync) //pretenc we're sync by hanging around until request is over
-                exc.waitForDone();
+        MessageDigest sha1 = sha1();
+        try {
+            for(int i = 0; i < reps; i++){
+                // Vary the amount of iterations slightly to not drastically
+                // affect benchmark, this could help work around some JIT optimizations.
+                String worthIt = waiter.busyWait(WORK_FACTOR + reps % 4);
+                sha1.update(worthIt.getBytes());
+                ContentExchange exc = sendRequestAsync();
+                if(!async)
+                    exc.waitForDone();
+            }
+            while(!done){
+                Thread.sleep(1000);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
-        while(!done){
-            Thread.sleep(1000);
-        }
+        // Required so busy waits aren't eliminated in JIT.
+        System.out.println(waiter + " hash " + Hex.encodeHexString(sha1.digest()));
+        System.gc();
     }
-    private static void busyWait(){
-        //math and stuff
-        int j=0;
-        for(int i=0;i<1000000;i++)
-            j = i*i/2;
-        System.out.println(j);
+
+    private static String getStats() {
+        return String.format("Finished async %s benchmark in %.4f s", isAsync, elapsed);
     }
-    
+
+    private static MessageDigest sha1() {
+        try {
+            return MessageDigest.getInstance("SHA-1");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        } 
+    }
+
     private static ContentExchange sendRequestAsync() throws Exception{
         ContentExchange exchange = new ContentExchange(true)
         {
@@ -77,12 +134,67 @@ public class Main {
         //we consider ourselves done when all requests have been serviced
         if(numSeen == numRequests){
             long end = System.nanoTime();
-            System.out.println("finished in "+(end-start) +" nanos");
+            elapsed = (end-start) / 1000000000.0;
             done = true;
         }
     }
     private static void error(){
         System.out.println("error");
     }
-    
+
+    private static enum BusyWaiter {
+        ARITHMETIC_LOOP, HASH;
+        
+        public String busyWait(int reps) {
+            switch (this) {
+            case ARITHMETIC_LOOP:
+                return loopWait(reps);
+            case HASH:
+                return hashWait(reps);
+            default:
+                return "";
+            }
+        }
+
+        /**
+         * Modifications to original loop and arithmetic CPU burn to avoid JIT
+         * optimizations. Hopefully.
+         * 
+         * @param max
+         *            Max reps to perform.
+         * @return Returned so the method isn't optimized away.
+         */
+        private static String loopWait(int max) {
+            int j = 0;
+            for(int i = 0; i < max; i++) {
+                j += i + i % 2;
+            }
+
+            return String.valueOf(j);
+        }
+
+        /**
+         * A hash based approach to cpu burn.
+         * 
+         * @param max
+         *            Max reps to perform.
+         * @return Return value so the method isn't optimized away.
+         */
+        private static String hashWait(int max) {
+            MessageDigest sha1 = sha1();
+            MessageDigest reduction = sha1();
+
+            for (int i = 0; i < max; i++) {
+                sha1.reset();
+                String unhashedString = i + "format" + i;
+                byte[] unhashedBytes = unhashedString.getBytes();
+                byte[] hashedBytes = sha1.digest(unhashedBytes);
+                reduction.update(hashedBytes);
+            }
+
+            byte[] hashedBytes = reduction.digest();
+            return Hex.encodeHexString(hashedBytes);
+        }
+
+    }
 }

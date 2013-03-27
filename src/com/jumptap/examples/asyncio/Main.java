@@ -4,31 +4,47 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
+import javax.servlet.ServletException;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
 import org.apache.commons.codec.binary.Hex;
 import org.eclipse.jetty.client.ContentExchange;
 import org.eclipse.jetty.client.HttpClient;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.handler.AbstractHandler;
 
 public class Main {
     /** How much reps does the busy wait do? */
-    private static final int WORK_FACTOR = 100000;
+    private static final int WORK_FACTOR = 10000;
 
     /**
-     * How many times do we run the tests before running tests where we look
-     * at the performance. Basically, how long before all the code is no
-     * longer getting affected by the JIT.
+     * How many times do we run the tests before running tests where we look at
+     * the performance. Basically, how long before all the code is no longer
+     * getting affected by the JIT.
      */
     private static final int WARMUP_FACTOR = 1000;
 
+    /**
+     * How many times do we run the tests.
+     */
     private static final int RUN_FACTOR = 1000;
 
+    /**
+     * Delay that each server request gets delayed.
+     */
+    private static final long SERVER_DELAY = 200;
+
     static boolean done = false;
-    static int numRequests = 10000;
+    static int numRequests = 0;
     static int numSeen = 0;
     static long start;
     static double elapsed = 0.0;
     static HttpClient client;
+    static Server server;
     static boolean isAsync = false;
-    static BusyWaiter waiter = BusyWaiter.ARITHMETIC_LOOP;
+    static BusyWaiter waiter = BusyWaiter.HASH;
 
     /**
      * @param args
@@ -44,6 +60,8 @@ public class Main {
         System.out.println();
         System.out.println(firstResults);
         System.out.println(lastResults);
+        server.stop();
+        server.join();
     }
 
     private static void setUp() throws Exception{
@@ -51,6 +69,25 @@ public class Main {
         client.setConnectorType(HttpClient.CONNECTOR_SELECT_CHANNEL);
         client.setMaxConnectionsPerAddress(1); 
         client.start();
+
+        server = new Server(8080);
+        server.setHandler(new AbstractHandler() {
+            @Override
+            public void handle(String target, Request baseRequest,
+                    HttpServletRequest request, HttpServletResponse response)
+                    throws IOException, ServletException {
+                try {
+                    Thread.sleep(SERVER_DELAY);
+                } catch (Exception e) {
+                    response.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+                    return;
+                }
+                response.setStatus(HttpServletResponse.SC_OK);
+                response.getWriter().append("Great!");
+                response.flushBuffer();
+            }
+        });
+        server.start();
     }
 
     /**
@@ -123,7 +160,7 @@ public class Main {
             }
         };
         //exchange.setMethod("GET");
-        exchange.setURL("http://www.yahoo.com");
+        exchange.setURL("http://localhost:8080/");
         client.send(exchange);
         return exchange;
     }

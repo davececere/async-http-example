@@ -3,6 +3,9 @@ package com.jumptap.examples.asyncio;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
@@ -45,6 +48,8 @@ public class Main {
     static Server server;
     static boolean isAsync = false;
     static BusyWaiter waiter = BusyWaiter.HASH;
+    //used to communicate http responses to main thread
+    static Queue<Integer> answerQueue;
 
     /**
      * @param args
@@ -65,6 +70,7 @@ public class Main {
     }
 
     private static void setUp() throws Exception{
+        answerQueue = new ConcurrentLinkedQueue<Integer>();
         client = new HttpClient();
         client.setConnectorType(HttpClient.CONNECTOR_SELECT_CHANNEL);
         client.setMaxConnectionsPerAddress(1); 
@@ -120,9 +126,12 @@ public class Main {
                 ContentExchange exc = sendRequestAsync();
                 if(!async)
                     exc.waitForDone();
+                //check if any answers are available
+                serviceQueue();
             }
             while(!done){
-                Thread.sleep(1000);
+                //finish up the rest of processing replies.
+                serviceQueue();
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -130,6 +139,14 @@ public class Main {
         // Required so busy waits aren't eliminated in JIT.
         System.out.println(waiter + " hash " + Hex.encodeHexString(sha1.digest()));
         System.gc();
+    }
+    
+    //drain whatever answers are there
+    private static void serviceQueue(){
+        while(!answerQueue.isEmpty()){
+            Integer answer = answerQueue.poll();
+            doTheRest(answer);
+        }
     }
 
     private static String getStats() {
@@ -154,7 +171,7 @@ public class Main {
                 //pretend that we have work to do that relies on response
                 //so we just pass the length to prove the idea
                 if (status == 200)
-                    doTheRest(this.getResponseContentBytes().length);
+                    answerQueue.offer(this.getResponseContentBytes().length);
                 else
                     error();
             }
@@ -165,8 +182,8 @@ public class Main {
         return exchange;
     }
 
-    //does this synch affect our results? its only hear because we're mutating numSeen
-    synchronized private static void doTheRest(int i){
+    //only called from main thread so dont worry about synchronizing
+    private static void doTheRest(int i){
         numSeen++;
         //we consider ourselves done when all requests have been serviced
         if(numSeen == numRequests){

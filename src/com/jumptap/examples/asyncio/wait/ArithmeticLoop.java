@@ -23,8 +23,8 @@ public class ArithmeticLoop implements ExpensiveWait {
      */
     @Override
     public String wait(String bogus) {
-        for (int i = 0; i < max; i++) {
-            bogus += new Date().getTime() % i;
+        for (int i = 1; i < max + bogus.length() % 5; i++) {
+            bogus += (new Date().getTime() % i);
         }
 
         return bogus;

@@ -29,7 +29,7 @@ public class HashWait implements ExpensiveWait {
 
         for (int i = 0; i < max; i++) {
             Hasher itemHasher = sha1.newHasher();
-            String unhashedString = i + "format" + i;
+            String unhashedString = i + bogus + i;
             byte[] unhashedBytes = unhashedString.getBytes();
             byte[] hashedBytes = itemHasher.putBytes(unhashedBytes).hash().asBytes();
             reduction.putBytes(hashedBytes);
